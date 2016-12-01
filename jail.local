@@ -1,0 +1,22 @@
+[ssh]
+enabled  = false
+
+[normal-request]
+enabled = true
+port = http,https
+filter = normal-request
+logpath = /var/log/nginx/shop.access.log
+findtime = 60
+bantime = 3600
+maxretry = 400
+action = aws-acl-action
+
+[apache-bench]
+enabled = true
+port = http,https
+filter = apache-bench
+logpath = /var/log/nginx/shop.access.log
+findtime = 60
+bantime = 3600
+maxretry = 5
+action = aws-acl-action

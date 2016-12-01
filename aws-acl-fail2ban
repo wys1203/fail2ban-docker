@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+
+# ###############################
+# AWS-ACL-Fail2ban v1.1
+# https://github.com/wys1203/aws-acl-fail2ban
+# Copyright (C) 2016, Stewart Wu
+# ##############################
+
+
+import random
+import argparse
+import subprocess
+import json
+
+
+class AwsAclFail2Ban:
+
+    def __init__(self, network_acl_id):
+        cmd_result = run_cmd_and_result("aws --region ap-southeast-1 ec2 describe-network-acls")
+        self.describe_network_acls = json.loads(cmd_result)
+
+        if network_acl_id is None:
+            cmd_result = run_cmd_and_result("ec2-metadata -i")
+            ec2_instance_id = cmd_result.replace("\n", "").replace("instance-id: ", "")
+            cmd_result = run_cmd_and_result(
+                "aws ec2 --region ap-southeast-1 describe-instances --instance-ids %s" % (ec2_instance_id))
+            ec2_describe = json.loads(cmd_result)
+            ec2_subnet_id = ec2_describe["Reservations"][0]["Instances"][0]["SubnetId"]
+            self.network_acl_id = self.__detect_network_acl_id_by_subnet_id(ec2_subnet_id)
+        else:
+            self.network_acl_id = network_acl_id
+
+    def __detect_network_acl_id_by_subnet_id(self, ec2_subnet_id):
+        for network in self.describe_network_acls["NetworkAcls"]:
+            for subnet in network["Associations"]:
+                if subnet["SubnetId"] == ec2_subnet_id:
+                    return subnet["NetworkAclId"]
+
+    def ban(self, ip):
+        rule_number = self.__get_available_rule_number(ip)
+        cmd = "aws --region ap-southeast-1 ec2 create-network-acl-entry --network-acl-id %s --rule-action deny --protocol -1 --rule-number %s --ingress --cidr-block %s/32" % (
+            self.network_acl_id, rule_number, ip)
+        # run_cmd_and_result(cmd)
+
+    def unban(self, ip):
+        rule_number = self.__get_available_rule_number(ip)
+        cmd = "aws --region ap-southeast-1 ec2 delete-network-acl-entry --network-acl-id %s --ingress --rule-number %s" % (
+            self.network_acl_id, rule_number)
+        # run_cmd_and_result(cmd)
+
+    def __get_all_inegress_entries(self):
+        result = self.describe_network_acls
+        acl = [d for d in result["NetworkAcls"] if d["NetworkAclId"] == self.network_acl_id][0]
+        entries = []
+        for entry in acl["Entries"]:
+            if entry["Egress"] is False:
+                entries.append(entry)
+        return entries
+
+    def __get_available_rule_number(self, ip):
+        rules = self.__rule_exists(ip)
+        if type(rules) is dict:
+            return rules["RuleNumber"]
+        else:
+            run = True
+            while run:
+                rule_number = random.randint(1, 99)
+                if rule_number not in rules:
+                    run = False
+            return rule_number
+
+    def __rule_exists(self, ip):
+        result = self.__get_all_inegress_entries()
+        exist_rule_number = []
+        for rule in result:
+            if rule["CidrBlock"].split("/")[0] == ip:
+                return rule
+            else:
+                exist_rule_number.append(rule["RuleNumber"])
+        return exist_rule_number
+
+
+def run_cmd_and_result(cmd):
+    if type(cmd) != list:
+        cmd = cmd.split(" ")
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = p.communicate()
+    return out
+
+
+def main(args):
+    aws_acl_fail2ban = AwsAclFail2Ban(args['network_acl_id'])
+
+    if args['ban'] is not None:
+        aws_acl_fail2ban.ban(args['ban'])
+    else:
+        aws_acl_fail2ban.unban(args['unban'])
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=u'AWS ACL Fail2Ban Controller')
+    parser.add_argument("-b", "--ban",
+                        help="Create a 'DENY' entry (a rule) in a network ACL with the specified rule number.")
+    parser.add_argument("-u", "--unban",
+                        help="Delete a entry (a rule) in a network ACL with the specified rule number.")
+    parser.add_argument("-i", "--network-acl-id", help="Specify the AWS Network Acl Id.")
+    args = vars(parser.parse_args())
+
+    main(args)
